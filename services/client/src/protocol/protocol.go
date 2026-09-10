@@ -6,13 +6,17 @@ import (
 )
 
 const (
-	tagAgency  = 1
-	tagBet     = 2
-	tagDone    = 3
-	tagWinners = 4
+	tagAgency     = 1
+	tagDone       = 3
+	tagWinners    = 4
+	tagBatch      = 5
+	tagBatchOk    = 6
+	tagBatchError = 7
 )
 
 const birthdateSize = 10 // YYYY-MM-DD
+
+const minBetFieldsSize = 1 + 1 + 4 + birthdateSize + 4
 
 type Bet struct {
 	FirstName string
@@ -68,16 +72,37 @@ func encodeBetFields(bet Bet) ([]byte, error) {
 	return fields, nil
 }
 
-func EncodeBet(bet Bet) ([]byte, error) {
-	fields, err := encodeBetFields(bet)
-	if err != nil {
-		return nil, err
+func EncodeBatch(bets []Bet) ([]byte, error) {
+	payload := make([]byte, 5, 5+len(bets)*minBetFieldsSize)
+	payload[0] = tagBatch
+	binary.BigEndian.PutUint32(payload[1:5], uint32(len(bets)))
+
+	for _, bet := range bets {
+		fields, err := encodeBetFields(bet)
+		if err != nil {
+			return nil, err
+		}
+		payload = append(payload, fields...)
 	}
-	return append([]byte{tagBet}, fields...), nil
+	return payload, nil
 }
 
 func EncodeDone() []byte {
 	return []byte{tagDone}
+}
+
+func DecodeBatchAck(payload []byte) (bool, error) {
+	if len(payload) != 1 {
+		return false, fmt.Errorf("expected a 1-byte batch ack, got %d bytes", len(payload))
+	}
+	switch payload[0] {
+	case tagBatchOk:
+		return true, nil
+	case tagBatchError:
+		return false, nil
+	default:
+		return false, fmt.Errorf("expected tag %d or %d, got %d", tagBatchOk, tagBatchError, payload[0])
+	}
 }
 
 func decodeName(payload []byte, offset int) (string, int, error) {
@@ -121,8 +146,6 @@ func decodeBetFields(payload []byte, offset int) (Bet, int, error) {
 		Number:    number,
 	}, offset, nil
 }
-
-const minBetFieldsSize = 1 + 1 + 4 + birthdateSize + 4
 
 func DecodeWinners(payload []byte) ([]Bet, error) {
 	if len(payload) < 5 || payload[0] != tagWinners {

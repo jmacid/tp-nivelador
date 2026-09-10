@@ -1,9 +1,11 @@
 import struct
 
 AGENCY = 1
-BET = 2
 DONE = 3
 WINNERS = 4
+BATCH = 5
+BATCH_OK = 6
+BATCH_ERROR = 7
 
 _BIRTHDATE_SIZE = 10  # YYYY-MM-DD
 
@@ -69,18 +71,22 @@ def _decode_bet_fields(payload: bytes, offset: int) -> tuple[tuple, int]:
     return (first_name, last_name, document, birthdate, number), offset
 
 
-def encode_bet(
-    first_name: str, last_name: str, document: int, birthdate: str, number: int
-) -> bytes:
-    return bytes([BET]) + _encode_bet_fields(
-        first_name, last_name, document, birthdate, number
-    )
+def _encode_bet_list(tag: int, bets: list[tuple]) -> bytes:
+    encoded = bytes([tag]) + struct.pack(">I", len(bets))
+    for first_name, last_name, document, birthdate, number in bets:
+        encoded += _encode_bet_fields(first_name, last_name, document, birthdate, number)
+    return encoded
 
 
-def decode_bet(payload: bytes) -> tuple:
-    _assert_tag(payload, BET)
-    fields, _ = _decode_bet_fields(payload, 1)
-    return fields
+def _decode_bet_list(payload: bytes, expected_tag: int) -> list[tuple]:
+    _assert_tag(payload, expected_tag)
+    count = struct.unpack(">I", payload[1:5])[0]
+    offset = 5
+    bets = []
+    for _ in range(count):
+        fields, offset = _decode_bet_fields(payload, offset)
+        bets.append(fields)
+    return bets
 
 
 def encode_done() -> bytes:
@@ -88,18 +94,24 @@ def encode_done() -> bytes:
 
 
 def encode_winners(bets: list[tuple]) -> bytes:
-    encoded = bytes([WINNERS]) + struct.pack(">I", len(bets))
-    for first_name, last_name, document, birthdate, number in bets:
-        encoded += _encode_bet_fields(first_name, last_name, document, birthdate, number)
-    return encoded
+    return _encode_bet_list(WINNERS, bets)
 
 
 def decode_winners(payload: bytes) -> list[tuple]:
-    _assert_tag(payload, WINNERS)
-    count = struct.unpack(">I", payload[1:5])[0]
-    offset = 5
-    winners = []
-    for _ in range(count):
-        fields, offset = _decode_bet_fields(payload, offset)
-        winners.append(fields)
-    return winners
+    return _decode_bet_list(payload, WINNERS)
+
+
+def encode_batch(bets: list[tuple]) -> bytes:
+    return _encode_bet_list(BATCH, bets)
+
+
+def decode_batch(payload: bytes) -> list[tuple]:
+    return _decode_bet_list(payload, BATCH)
+
+
+def encode_batch_ok() -> bytes:
+    return bytes([BATCH_OK])
+
+
+def encode_batch_error() -> bytes:
+    return bytes([BATCH_ERROR])

@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"bytes"
-	"encoding/binary"
 	"testing"
 )
 
@@ -15,36 +14,53 @@ func TestEncodeAgency_ProducesTagAndBigEndianId(t *testing.T) {
 	}
 }
 
-func TestEncodeBet_ProducesExpectedBytes(t *testing.T) {
-	bet := Bet{FirstName: "Ana", LastName: "Diaz", Document: 28555666, Birthdate: "1985-05-05", Number: 7574}
+func TestEncodeBatch_ProducesExpectedBytes(t *testing.T) {
+	betA := Bet{FirstName: "Ana", LastName: "Diaz", Document: 28555666, Birthdate: "1985-05-05", Number: 7574}
+	betB := Bet{FirstName: "Bob", LastName: "Ruiz", Document: 12345678, Birthdate: "1990-01-01", Number: 42}
 
-	got, err := EncodeBet(bet)
+	got, err := EncodeBatch([]Bet{betA, betB})
 	if err != nil {
-		t.Fatalf("EncodeBet returned error: %v", err)
+		t.Fatalf("EncodeBatch returned error: %v", err)
 	}
 
-	want := []byte{tagBet, 3}
-	want = append(want, []byte("Ana")...)
-	want = append(want, 4)
-	want = append(want, []byte("Diaz")...)
-	documentBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(documentBytes, 28555666)
-	want = append(want, documentBytes...)
-	want = append(want, []byte("1985-05-05")...)
-	numberBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(numberBytes, 7574)
-	want = append(want, numberBytes...)
+	fieldsA, err := encodeBetFields(betA)
+	if err != nil {
+		t.Fatalf("encodeBetFields returned error: %v", err)
+	}
+	fieldsB, err := encodeBetFields(betB)
+	if err != nil {
+		t.Fatalf("encodeBetFields returned error: %v", err)
+	}
+
+	want := []byte{tagBatch, 0, 0, 0, 2}
+	want = append(want, fieldsA...)
+	want = append(want, fieldsB...)
 
 	if !bytes.Equal(got, want) {
-		t.Fatalf("EncodeBet() = %v, want %v", got, want)
+		t.Fatalf("EncodeBatch() = %v, want %v", got, want)
 	}
 }
 
-func TestEncodeBet_RejectsWrongBirthdateLength(t *testing.T) {
-	bet := Bet{FirstName: "Ana", LastName: "Diaz", Document: 1, Birthdate: "1985-5-5", Number: 1}
+func TestEncodeBatch_OfEmptySliceProducesJustTheHeader(t *testing.T) {
+	got, err := EncodeBatch(nil)
+	if err != nil {
+		t.Fatalf("EncodeBatch returned error: %v", err)
+	}
 
-	if _, err := EncodeBet(bet); err == nil {
-		t.Fatal("EncodeBet with malformed birthdate should return an error")
+	want := []byte{tagBatch, 0, 0, 0, 0}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("EncodeBatch(nil) = %v, want %v", got, want)
+	}
+}
+
+func TestEncodeBatch_RejectsAnyMalformedBet(t *testing.T) {
+	bets := []Bet{
+		{FirstName: "Ana", LastName: "Diaz", Document: 1, Birthdate: "1985-05-05", Number: 1},
+		{FirstName: "Bob", LastName: "Ruiz", Document: 1, Birthdate: "bad-date", Number: 1},
+	}
+
+	if _, err := EncodeBatch(bets); err == nil {
+		t.Fatal("EncodeBatch with a malformed bet should return an error")
 	}
 }
 
@@ -54,6 +70,38 @@ func TestEncodeDone_ProducesJustTheTag(t *testing.T) {
 	want := []byte{tagDone}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("EncodeDone() = %v, want %v", got, want)
+	}
+}
+
+func TestDecodeBatchAck_TrueForBatchOk(t *testing.T) {
+	ok, err := DecodeBatchAck([]byte{tagBatchOk})
+	if err != nil {
+		t.Fatalf("DecodeBatchAck returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("DecodeBatchAck(BATCH_OK) = false, want true")
+	}
+}
+
+func TestDecodeBatchAck_FalseForBatchError(t *testing.T) {
+	ok, err := DecodeBatchAck([]byte{tagBatchError})
+	if err != nil {
+		t.Fatalf("DecodeBatchAck returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("DecodeBatchAck(BATCH_ERROR) = true, want false")
+	}
+}
+
+func TestDecodeBatchAck_RejectsUnknownTag(t *testing.T) {
+	if _, err := DecodeBatchAck([]byte{tagWinners}); err == nil {
+		t.Fatal("DecodeBatchAck with an unknown tag should return an error")
+	}
+}
+
+func TestDecodeBatchAck_RejectsWrongLength(t *testing.T) {
+	if _, err := DecodeBatchAck([]byte{tagBatchOk, 0}); err == nil {
+		t.Fatal("DecodeBatchAck with a payload longer than 1 byte should return an error")
 	}
 }
 

@@ -13,22 +13,34 @@ class Server:
         self.server_port = server_port
         self.lottery = Lottery(storage_path=_STORAGE_PATH)
 
-    def _receive_agency_bets(self, client_socket) -> tuple[int, list[Bet]]:
-        agency_payload = safe_socket.recv_frame(client_socket)
-        agency_id = protocol.decode_agency(agency_payload)
+    def _store_batch(self, agency_id: int, payload: bytes) -> int:
+        bets = [
+            Bet(agency_id, first_name, last_name, document, birthdate, number)
+            for first_name, last_name, document, birthdate, number in protocol.decode_batch(
+                payload
+            )
+        ]
+        self.lottery.store_bets(bets)
+        return len(bets)
 
-        bets = []
+    def _receive_bets(self, client_socket, agency_id: int) -> int:
+        bets_amount = 0
         while True:
             payload = safe_socket.recv_frame(client_socket)
             if not payload:
                 raise protocol.ProtocolError("received an empty frame")
             if payload[0] == protocol.DONE:
-                return agency_id, bets
+                return bets_amount
 
-            first_name, last_name, document, birthdate, number = protocol.decode_bet(
-                payload
-            )
-            bets.append(Bet(agency_id, first_name, last_name, document, birthdate, number))
+            try:
+                stored = self._store_batch(agency_id, payload)
+            except Exception as e:
+                logger.error("handle-batch", logger.LogResult.fail, "err", e)
+                safe_socket.send_frame(client_socket, protocol.encode_batch_error())
+                continue
+
+            bets_amount += stored
+            safe_socket.send_frame(client_socket, protocol.encode_batch_ok())
 
     def _send_winners(self, client_socket, agency_id: int) -> None:
         winners = [
@@ -42,8 +54,10 @@ class Server:
         action = "handle-client"
         logger.info(action, logger.LogResult.in_progress)
         try:
-            agency_id, bets = self._receive_agency_bets(client_socket)
-            self.lottery.store_bets(bets)
+            agency_payload = safe_socket.recv_frame(client_socket)
+            agency_id = protocol.decode_agency(agency_payload)
+
+            bets_amount = self._receive_bets(client_socket, agency_id)
             self._send_winners(client_socket, agency_id)
             logger.info(
                 action,
@@ -51,7 +65,7 @@ class Server:
                 "agency-id",
                 agency_id,
                 "bets-amount",
-                len(bets),
+                bets_amount,
             )
         except Exception as e:
             logger.error(action, logger.LogResult.fail, "err", e)

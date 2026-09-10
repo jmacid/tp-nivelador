@@ -21,6 +21,7 @@ type ClientConfig struct {
 	ServerHost string
 	ServerPort string
 	AgencyId   string
+	BatchSize  int
 	InputFile  string
 	OutputFile string
 }
@@ -86,24 +87,55 @@ func parseBetLine(line string) (protocol.Bet, error) {
 	}, nil
 }
 
+func (client *Client) sendBatch(batch []protocol.Bet) error {
+	payload, err := protocol.EncodeBatch(batch)
+	if err != nil {
+		return err
+	}
+	if err := safe_socket.SendFrame(client.conn, payload); err != nil {
+		return err
+	}
+
+	ackPayload, err := safe_socket.RecvFrame(client.conn)
+	if err != nil {
+		return err
+	}
+	ok, err := protocol.DecodeBatchAck(ackPayload)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("server rejected a batch of %d bets", len(batch))
+	}
+	return nil
+}
+
 func (client *Client) sendBets(inFile *os.File) error {
 	scanner := bufio.NewScanner(inFile)
+	batch := make([]protocol.Bet, 0, client.config.BatchSize)
+
 	for scanner.Scan() {
 		bet, err := parseBetLine(scanner.Text())
 		if err != nil {
 			return err
 		}
+		batch = append(batch, bet)
 
-		payload, err := protocol.EncodeBet(bet)
-		if err != nil {
-			return err
-		}
-		if err := safe_socket.SendFrame(client.conn, payload); err != nil {
-			return err
+		if len(batch) == client.config.BatchSize {
+			if err := client.sendBatch(batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+
+	if len(batch) > 0 {
+		if err := client.sendBatch(batch); err != nil {
+			return err
+		}
 	}
 
 	return safe_socket.SendFrame(client.conn, protocol.EncodeDone())
