@@ -1,6 +1,5 @@
 import socket
-
-# TODO: Complete with a short-read/short-write tolerant implementation
+import struct
 
 
 def recv_all(sock: socket.socket, size: int) -> bytearray:
@@ -20,3 +19,18 @@ def send_all(sock: socket.socket, data: bytes) -> None:
         if sent == 0:
             raise ConnectionError("La conexión se cerró antes de enviar todos los datos")
         total_sent += sent
+
+
+_FRAME_HEADER_SIZE = 4
+
+
+def send_frame(sock: socket.socket, payload: bytes) -> None:
+    header = struct.pack(">I", len(payload))
+    send_all(sock, header)
+    send_all(sock, payload)
+
+
+def recv_frame(sock: socket.socket) -> bytes:
+    header = recv_all(sock, _FRAME_HEADER_SIZE)
+    size = struct.unpack(">I", header)[0]
+    return bytes(recv_all(sock, size))

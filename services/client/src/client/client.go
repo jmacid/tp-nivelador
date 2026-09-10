@@ -2,22 +2,20 @@ package client
 
 import (
 	"bufio"
-	"encoding/binary"
+	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/protocol"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
 )
 
 const CONNECTION_ATTEMPTS_MAX = 3
 const CONNECTION_ATTEMPS_DELAY_MS = 200
-
-const ECHO_CLIENT_MESSAGE_AMOUNT = 3
-const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
-
-const MESSAGE_HEADER_SIZE = 4
 
 type ClientConfig struct {
 	ServerHost string
@@ -64,9 +62,74 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
+func parseBetLine(line string) (protocol.Bet, error) {
+	fields := strings.Split(line, ",")
+	if len(fields) != 5 {
+		return protocol.Bet{}, fmt.Errorf("expected 5 fields in input line, got %d: %q", len(fields), line)
+	}
+
+	document, err := strconv.ParseUint(fields[2], 10, 32)
+	if err != nil {
+		return protocol.Bet{}, fmt.Errorf("invalid document in line %q: %w", line, err)
+	}
+	number, err := strconv.ParseUint(fields[4], 10, 32)
+	if err != nil {
+		return protocol.Bet{}, fmt.Errorf("invalid number in line %q: %w", line, err)
+	}
+
+	return protocol.Bet{
+		FirstName: fields[0],
+		LastName:  fields[1],
+		Document:  uint32(document),
+		Birthdate: fields[3],
+		Number:    uint32(number),
+	}, nil
+}
+
+func (client *Client) sendBets(inFile *os.File) error {
+	scanner := bufio.NewScanner(inFile)
+	for scanner.Scan() {
+		bet, err := parseBetLine(scanner.Text())
+		if err != nil {
+			return err
+		}
+
+		payload, err := protocol.EncodeBet(bet)
+		if err != nil {
+			return err
+		}
+		if err := safe_socket.SendFrame(client.conn, payload); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	return safe_socket.SendFrame(client.conn, protocol.EncodeDone())
+}
+
+func writeWinners(outFile *os.File, winners []protocol.Bet) error {
+	for _, winner := range winners {
+		line := fmt.Sprintf(
+			"%s,%s,%d,%s,%d\n",
+			winner.FirstName, winner.LastName, winner.Document, winner.Birthdate, winner.Number,
+		)
+		if _, err := outFile.WriteString(line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (client *Client) Run() error {
-	const mainAction = "test-echo-server"
+	const action = "run-bets"
 	defer client.conn.Close()
+
+	agencyId, err := strconv.ParseUint(client.config.AgencyId, 10, 32)
+	if err != nil {
+		return fmt.Errorf("invalid AGENCY_ID %q: %w", client.config.AgencyId, err)
+	}
 
 	inFile, err := os.Open(client.config.InputFile)
 	if err != nil {
@@ -80,35 +143,29 @@ func (client *Client) Run() error {
 	}
 	defer outFile.Close()
 
-	scanner := bufio.NewScanner(inFile)
-	for scanner.Scan() {
-		linea := scanner.Text()
+	logger.Info(action, logger.InProgress, "agency-id", client.config.AgencyId)
 
-		payload := []byte(linea)
-
-		header := make([]byte, MESSAGE_HEADER_SIZE)
-		binary.BigEndian.PutUint32(header, uint32(len(payload)))
-
-		if err := safe_socket.SendAll(client.conn, header); err != nil {
-			return err
-		}
-		if err := safe_socket.SendAll(client.conn, payload); err != nil {
-			return err
-		}
-
-		respHeader, err := safe_socket.RecvAll(client.conn, MESSAGE_HEADER_SIZE)
-		if err != nil {
-			return err
-		}
-		respSize := binary.BigEndian.Uint32(respHeader)
-
-		responseBuffer, err := safe_socket.RecvAll(client.conn, int(respSize))
-		if err != nil {
-			return err
-		}
-
-		outFile.WriteString(string(responseBuffer) + "\n")
+	if err := safe_socket.SendFrame(client.conn, protocol.EncodeAgency(uint32(agencyId))); err != nil {
+		return err
 	}
 
-	return scanner.Err()
+	if err := client.sendBets(inFile); err != nil {
+		return err
+	}
+
+	responsePayload, err := safe_socket.RecvFrame(client.conn)
+	if err != nil {
+		return err
+	}
+	winners, err := protocol.DecodeWinners(responsePayload)
+	if err != nil {
+		return err
+	}
+
+	if err := writeWinners(outFile, winners); err != nil {
+		return err
+	}
+
+	logger.Info(action, logger.Success, "agency-id", client.config.AgencyId, "winners-amount", len(winners))
+	return nil
 }

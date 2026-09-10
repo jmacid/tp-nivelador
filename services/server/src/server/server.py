@@ -1,46 +1,60 @@
 import socket
-import struct
 import logger
 import safe_socket
+import protocol
+from lottery import Bet, Lottery
 
-_MESSAGE_HEADER_SIZE = 4
+_STORAGE_PATH = "/tmp/lottery_bets.csv"
 
 
 class Server:
     def __init__(self, server_host: str, server_port: int) -> None:
         self.server_host = server_host
         self.server_port = server_port
+        self.lottery = Lottery(storage_path=_STORAGE_PATH)
+
+    def _receive_agency_bets(self, client_socket) -> tuple[int, list[Bet]]:
+        agency_payload = safe_socket.recv_frame(client_socket)
+        agency_id = protocol.decode_agency(agency_payload)
+
+        bets = []
+        while True:
+            payload = safe_socket.recv_frame(client_socket)
+            if not payload:
+                raise protocol.ProtocolError("received an empty frame")
+            if payload[0] == protocol.DONE:
+                return agency_id, bets
+
+            first_name, last_name, document, birthdate, number = protocol.decode_bet(
+                payload
+            )
+            bets.append(Bet(agency_id, first_name, last_name, document, birthdate, number))
+
+    def _send_winners(self, client_socket, agency_id: int) -> None:
+        winners = [
+            (bet.first_name, bet.last_name, bet.document, bet.birthdate, bet.number)
+            for bet in self.lottery.load_bets()
+            if bet.agency_id == agency_id and self.lottery.has_won(bet)
+        ]
+        safe_socket.send_frame(client_socket, protocol.encode_winners(winners))
 
     def _handle_client(self, client_socket):
         action = "handle-client"
-        message_amount = 0
+        logger.info(action, logger.LogResult.in_progress)
         try:
-            logger.info(action, logger.LogResult.in_progress)
-            while True:
-                try:
-                    header = safe_socket.recv_all(
-                        client_socket, _MESSAGE_HEADER_SIZE
-                    )
-                except ConnectionError:
-                    logger.info(
-                        action,
-                        logger.LogResult.success,
-                        "messages-amount",
-                        message_amount,
-                    )
-                    return
-
-                message_size = struct.unpack(">I", header)[0]
-                client_message = safe_socket.recv_all(client_socket, message_size)
-
-                message_amount += 1
-                safe_socket.send_all(client_socket, header)
-                safe_socket.send_all(client_socket, client_message)
-        except Exception as e:
-            logger.error(
-                action, logger.LogResult.fail, "messages-amount", message_amount
+            agency_id, bets = self._receive_agency_bets(client_socket)
+            self.lottery.store_bets(bets)
+            self._send_winners(client_socket, agency_id)
+            logger.info(
+                action,
+                logger.LogResult.success,
+                "agency-id",
+                agency_id,
+                "bets-amount",
+                len(bets),
             )
-            raise e
+        except Exception as e:
+            logger.error(action, logger.LogResult.fail, "err", e)
 
     def run(self):
         action = "accept-connection"
@@ -56,4 +70,5 @@ class Server:
                     raise e
                 logger.info(action, logger.LogResult.success)
 
-                self._handle_client(client_socket)
+                with client_socket:
+                    self._handle_client(client_socket)
