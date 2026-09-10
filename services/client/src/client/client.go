@@ -2,11 +2,13 @@ package client
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -16,6 +18,8 @@ import (
 
 const CONNECTION_ATTEMPTS_MAX = 3
 const CONNECTION_ATTEMPS_DELAY_MS = 200
+
+var ErrShutdown = errors.New("shutdown requested")
 
 type ClientConfig struct {
 	ServerHost string
@@ -27,22 +31,34 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	conn   net.Conn
-	config ClientConfig
+	conn         net.Conn
+	config       ClientConfig
+	shuttingDown atomic.Bool
 }
 
-func NewClient(config ClientConfig) (*Client, error) {
-	conn, err := connectToServer(config.ServerHost, config.ServerPort)
+func NewClient(config ClientConfig, shutdown <-chan struct{}) (*Client, error) {
+	conn, err := connectToServer(config.ServerHost, config.ServerPort, shutdown)
 	if err != nil {
 		logger.Warn("connect-to-server", logger.Fail)
 		return nil, err
 	}
 
 	client := &Client{conn: conn, config: config}
+	go client.watchForShutdown(shutdown)
 	return client, nil
 }
 
-func connectToServer(host, port string) (net.Conn, error) {
+func (client *Client) watchForShutdown(shutdown <-chan struct{}) {
+	<-shutdown
+	client.shuttingDown.Store(true)
+	client.conn.Close()
+}
+
+func (client *Client) IsShuttingDown() bool {
+	return client.shuttingDown.Load()
+}
+
+func connectToServer(host, port string, shutdown <-chan struct{}) (net.Conn, error) {
 	const action = "connect-to-server"
 	var err error
 	var conn net.Conn
@@ -52,7 +68,11 @@ func connectToServer(host, port string) (net.Conn, error) {
 		conn, err = net.Dial("tcp", host+":"+port)
 		if err != nil {
 			logger.Warn(action, logger.Fail, "attempt", i)
-			time.Sleep(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond)
+			select {
+			case <-time.After(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond):
+			case <-shutdown:
+				return nil, ErrShutdown
+			}
 			continue
 		}
 

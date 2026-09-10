@@ -1,4 +1,5 @@
 import socket
+import signal
 import threading
 import logger
 import safe_socket
@@ -17,6 +18,8 @@ class Server:
         self.lottery = Lottery(storage_path=_STORAGE_PATH)
         self._storage_lock = threading.Lock()
         self._agency_quorum = AgencyQuorum(agency_quorum_min)
+        self._shutting_down = threading.Event()
+        self._server_socket = None
 
     def _store_batch(self, agency_id: int, payload: bytes) -> int:
         from lottery import Bet
@@ -67,7 +70,20 @@ class Server:
             agency_id = protocol.decode_agency(agency_payload)
 
             bets_amount = self._receive_bets(client_socket, agency_id)
-            self._agency_quorum.wait(agency_id)
+            quorum_reached = self._agency_quorum.wait(agency_id)
+            if not quorum_reached:
+                logger.info(
+                    action,
+                    logger.LogResult.success,
+                    "agency-id",
+                    agency_id,
+                    "bets-amount",
+                    bets_amount,
+                    "aborted",
+                    "shutting-down",
+                )
+                return
+
             self._send_winners(client_socket, agency_id)
             logger.info(
                 action,
@@ -84,9 +100,19 @@ class Server:
         with client_socket:
             self._handle_client(client_socket)
 
+    def _handle_sigterm(self, signum, frame):
+        action = "sigterm"
+        logger.info(action, logger.LogResult.in_progress)
+        self._shutting_down.set()
+        self._agency_quorum.cancel()
+        if self._server_socket is not None:
+            self._server_socket.close()
+
     def run(self):
         action = "accept-connection"
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            self._server_socket = server_socket
             server_socket.bind((self.server_host, self.server_port))
             server_socket.listen()
             while True:
@@ -94,6 +120,9 @@ class Server:
                     logger.info(action, logger.LogResult.in_progress)
                     client_socket, _ = server_socket.accept()
                 except Exception as e:
+                    if self._shutting_down.is_set():
+                        logger.info(action, logger.LogResult.success, "reason", "sigterm")
+                        return
                     logger.error(action, logger.LogResult.fail)
                     raise e
                 logger.info(action, logger.LogResult.success)

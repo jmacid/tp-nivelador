@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 
 	client "github.com/7574-sistemas-distribuidos/tp-nivelador/src/client"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -55,6 +57,18 @@ func loadConfig() (client.ClientConfig, error) {
 	}, nil
 }
 
+func waitForShutdownSignal() <-chan struct{} {
+	shutdown := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		logger.Info("sigterm", logger.InProgress)
+		close(shutdown)
+	}()
+	return shutdown
+}
+
 func run() int {
 	config, err := loadConfig()
 	if err != nil {
@@ -62,13 +76,23 @@ func run() int {
 		return 1
 	}
 
-	client, err := client.NewClient(config)
+	shutdown := waitForShutdownSignal()
+
+	c, err := client.NewClient(config, shutdown)
 	if err != nil {
+		if errors.Is(err, client.ErrShutdown) {
+			logger.Info("client-new", logger.Success, "reason", "sigterm")
+			return 0
+		}
 		logger.Error("client-new", logger.Fail, "err", err)
 		return 1
 	}
 
-	if err := client.Run(); err != nil {
+	if err := c.Run(); err != nil {
+		if c.IsShuttingDown() {
+			logger.Info("client-run", logger.Success, "reason", "sigterm")
+			return 0
+		}
 		logger.Error("client-run", logger.Fail, "err", err)
 		return 1
 	}
