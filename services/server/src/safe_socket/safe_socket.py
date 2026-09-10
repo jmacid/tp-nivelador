@@ -11,13 +11,20 @@ def recv_all(sock: socket.socket, size: int) -> bytearray:
         data.extend(chunk)
     return data
 
+_MAX_CONSECUTIVE_EMPTY_SENDS = 10
+
 
 def send_all(sock: socket.socket, data: bytes) -> None:
     total_sent = 0
+    consecutive_empty_sends = 0
     while total_sent < len(data):
         sent = sock.send(data[total_sent:])
         if sent == 0:
-            raise ConnectionError("La conexión se cerró antes de enviar todos los datos")
+            consecutive_empty_sends += 1
+            if consecutive_empty_sends >= _MAX_CONSECUTIVE_EMPTY_SENDS:
+                raise ConnectionError("La conexión se cerró antes de enviar todos los datos")
+            continue
+        consecutive_empty_sends = 0
         total_sent += sent
 
 

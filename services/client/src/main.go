@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 
@@ -100,5 +101,6 @@ func run() int {
 }
 
 func main() {
+	debug.SetGCPercent(20)
 	os.Exit(run())
 }
