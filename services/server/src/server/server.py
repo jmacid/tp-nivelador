@@ -1,8 +1,9 @@
 import socket
+import struct
 import logger
 import safe_socket
 
-_ECHO_SERVER_MESSAGE_SIZE = 1024
+_MESSAGE_HEADER_SIZE = 4
 
 
 class Server:
@@ -16,10 +17,11 @@ class Server:
         try:
             logger.info(action, logger.LogResult.in_progress)
             while True:
-                client_message = safe_socket.recv_all(
-                    client_socket, _ECHO_SERVER_MESSAGE_SIZE
-                )
-                if not client_message:
+                try:
+                    header = safe_socket.recv_all(
+                        client_socket, _MESSAGE_HEADER_SIZE
+                    )
+                except ConnectionError:
                     logger.info(
                         action,
                         logger.LogResult.success,
@@ -27,7 +29,12 @@ class Server:
                         message_amount,
                     )
                     return
+
+                message_size = struct.unpack(">I", header)[0]
+                client_message = safe_socket.recv_all(client_socket, message_size)
+
                 message_amount += 1
+                safe_socket.send_all(client_socket, header)
                 safe_socket.send_all(client_socket, client_message)
         except Exception as e:
             logger.error(

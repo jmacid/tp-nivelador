@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"encoding/binary"
 	"net"
 	"os"
 	"time"
@@ -13,9 +14,10 @@ import (
 const CONNECTION_ATTEMPTS_MAX = 3
 const CONNECTION_ATTEMPS_DELAY_MS = 200
 
-const ECHO_CLIENT_BUFFER_SIZE = 512
 const ECHO_CLIENT_MESSAGE_AMOUNT = 3
 const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
+
+const MESSAGE_HEADER_SIZE = 4
 
 type ClientConfig struct {
 	ServerHost string
@@ -82,11 +84,25 @@ func (client *Client) Run() error {
 	for scanner.Scan() {
 		linea := scanner.Text()
 
-		if err := safe_socket.SendAll(client.conn, []byte(linea)); err != nil {
+		payload := []byte(linea)
+
+		header := make([]byte, MESSAGE_HEADER_SIZE)
+		binary.BigEndian.PutUint32(header, uint32(len(payload)))
+
+		if err := safe_socket.SendAll(client.conn, header); err != nil {
+			return err
+		}
+		if err := safe_socket.SendAll(client.conn, payload); err != nil {
 			return err
 		}
 
-		responseBuffer, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
+		respHeader, err := safe_socket.RecvAll(client.conn, MESSAGE_HEADER_SIZE)
+		if err != nil {
+			return err
+		}
+		respSize := binary.BigEndian.Uint32(respHeader)
+
+		responseBuffer, err := safe_socket.RecvAll(client.conn, int(respSize))
 		if err != nil {
 			return err
 		}
